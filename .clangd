@@ -1,0 +1,11 @@
+CompileFlags:
+  Add:
+    - "--driver-mode=gcc"
+    - "--include=common.h"
+    - "-Wall"
+    - "-Wextra"
+    - "-Werror=incompatible-pointer-types"
+    - "-std=gnu23"
+    - "-Ilibs/freetype/include"
+    - "-D_DEBUG"
+    - "-DUSE_KERNING=1"
