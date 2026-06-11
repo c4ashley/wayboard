@@ -102,6 +102,7 @@ There's still a lot of work to do, but so far so good.
 - libxkbcommon
 - wayland
 - wayland-protocols
+- wlr-protocols
 - libfreetype (included)
 
 ```bash
