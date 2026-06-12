@@ -15,6 +15,8 @@
 #include <poll.h>
 #include <signal.h>
 
+#include "graphics.h"
+
 
 struct wl_registry_listener s_registryListener;
 struct wl_output_listener s_outputListener;
@@ -32,15 +34,6 @@ struct zwp_input_method_v2_listener s_inputMethodListener;
 struct zwp_input_method_keyboard_grab_v2_listener s_inputGrabListener;
 #endif
 
-struct Graphics
-{
-	uint32_t Foreground;
-	uint32_t Background;
-	void*    Buffer;
-	struct wl_buffer * WlBuffer;
-	size_t   Width, Height, Stride;
-	FT_Face  Font;
-};
 
 
 static void PrecalculateKeyGeometry(struct AppContext* context);
@@ -53,7 +46,6 @@ static void SetBackgroundColourByState(uint32_t state, struct Graphics* graphics
 static uint32_t SetBackgroundColourByKey(uint32_t stateField, int key, uint32_t currentState, struct Graphics* graphics);
 static void UpdateModifierUi(struct AppContext* context, xkb_mod_mask_t locked, xkb_mod_mask_t depressed);
 static FP266 CalculateStringWidth(FT_Face font, const char* text);
-static void CreateGraphicsFromBuffer(struct Buffer* buffer, struct AppContext* context, struct Graphics* result);
 
 // @param Modifiers: When used for KEYCHARS, Modifiers indicates the held modifier keys. For other lists, this should always be 0.
 #define CHARINDEXFORKEY(Cluster, Row, Key, Modifiers) ({ \
@@ -80,6 +72,7 @@ static void CreateGraphicsFromBuffer(struct Buffer* buffer, struct AppContext* c
 static const int KEYCHARS_SHIFTOFFSET = (16 * 5) + (4 * 10);
 static const int KEYCHARS_CAPSOFFSET = (16 * 5) + (4 * 10) + (16 * 4);
 static const int KEYCHARS_SHIFTCAPSOFFSET = (16 * 5) + (4 * 10) + (16 * 4) + (16 * 4);
+static const int KEYCHARS_COMPACTOFFSET = (16 * 5) + (4 * 10) + (16 * 4) + (16 * 4) + (16 * 4);
 static const char KEYCHARS[] = {
 	// --- main keyboard ---
 	/* 0*/ '`','1','2','3','4','5','6','7','8','9','0','-','=',TEXTCACHEINDEX(Backspace),' ',' ',
@@ -126,6 +119,8 @@ static const char KEYCHARS[] = {
 	           'a','s','d','f','g','h','j','k','l',':','"',TEXTCACHEINDEX(Enter),' ',' ',' ',
 	/*A8*/ TEXTCACHEINDEX(Shift),
 	           'z','x','c','v','b','n','m','<','>','?',TEXTCACHEINDEX(Shift),' ',' ',' ',' ',
+    // --- compact space row (arrows at end)
+	/*B8*/ TEXTCACHEINDEX(Ctrl), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Alt), ' ', TEXTCACHEINDEX(Left), TEXTCACHEINDEX(Down), TEXTCACHEINDEX(Up), TEXTCACHEINDEX(Right), ' ',' ',' ',' ',' ',' ',' ',' ',
 };
 static const uint8_t KEYSPERROW[] = {14, 14, 13, 12, 8,
 	                             3, 3, 0, 2, 3,
@@ -153,8 +148,12 @@ KEY_NUMLOCK, KEY_KPSLASH, KEY_KPASTERISK, KEY_KPMINUS,
 KEY_KP7, KEY_KP8, KEY_KP9, KEY_KPPLUS,
 KEY_KP4, KEY_KP5, KEY_KP6, 0,
 KEY_KP1, KEY_KP2, KEY_KP3, KEY_KPENTER,
-KEY_KP0, KEY_KPDOT, KEY_KPDOT, 0
+KEY_KP0, KEY_KPDOT, KEY_KPDOT, 0,
+
+KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_LEFT, KEY_DOWN , KEY_UP, KEY_RIGHT, 0, 0, 0, 0, 0, 0, 0, 0,
 };
+
+static const size_t KEYCODES_COMPACTOFFSET = (16 * 5) + (10 * 4);
 
 static struct timespec s_clockResolution;
 
@@ -170,12 +169,10 @@ void DrawRow(struct Graphics* graphics, struct AppContext* context, int row);
 void SendKey(struct AppContext* context, KeyIndex key, int state, uint32_t time);
 void SetHighlightFlag(struct AppContext* context, uint32_t flag, KeyIndex index, bool deferRedraw);
 void ClearHighlightFlag(struct AppContext* context, uint32_t flag, KeyIndex index, bool deferRedraw);
-void DrawRectangle(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height)
-{
-	Graphics_Fill(graphics, x, y, width, height);
-}
 void DrawKeyboard(struct AppContext* context);
 void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state);
+static inline void DrawRectangle(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height) { Graphics_Fill(graphics, x, y, width, height); };
+
 void CreateBuffer(struct Buffer* buffer, int index, struct AppContext* context);
 void DestroyBuffer(struct Buffer* buffer);
 struct Buffer* FindAvailableBuffer(struct AppContext* context, bool makeUnavailable);
@@ -186,183 +183,6 @@ static struct AppContext* s_context;
 
 static void DestroyFreeType() { FT_Done_FreeType(s_context->FreeType); };
 static void DestroyFonts()    { FT_Done_Face(s_context->Font_CharKeys); FT_Done_Face(s_context->Font_WordKeys);};
-
-void RefreshInvalidatedRegions(struct AppContext* context)
-{
-	struct Buffer* buffer = NULL;
-	struct Graphics graphics;
-	bool redrawing = false;
-
-		struct timespec clock1, clock2;
-		clock_gettime(CLOCK_MONOTONIC, &clock1);
-
-	if (context->DirtyState)
-	{
-		if (!FindAvailableBuffer(context, false))
-			return; // no buffers available, return without affecting the queue
-
-		buffer = FindAvailableBuffer(context, true);
-		if (buffer == NULL || buffer->Buffer == NULL)
-			return;
-
-		redrawing = true;
-
-		CreateGraphicsFromBuffer(buffer, context, &graphics);
-		wl_surface_attach(context->Surface, buffer->Buffer, 0, 0);
-
-		switch (context->DirtyState)
-		{
-			case DS_LetterKeys:
-				DrawRow(&graphics, context, 1);
-				DrawRow(&graphics, context, 2);
-				DrawRow(&graphics, context, 3);
-				DrawRow(&graphics, context, 4);
-				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)(context->StartY + context->RowHeight), (int)(14.9 * context->StandardKeyWidth), (int)(4 * context->RowHeight));
-				break;
-			case DS_NumericKeys:
-				DrawRow(&graphics, context, 0);
-				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(1 * context->RowHeight));
-				break;
-			case DS_WholeMainKeyboard:
-				DrawRow(&graphics, context, 0);
-				DrawRow(&graphics, context, 1);
-				DrawRow(&graphics, context, 2);
-				DrawRow(&graphics, context, 3);
-				//DrawRow(&graphics, context, 4);
-				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(5 * context->RowHeight));
-				break;
-			case DS_WholeSurface:
-				// TODO: Refactor DrawKeyboard. DrawKeyboard will attempt to obtain a buffer, which it will be unable to do.
-				DrawKeyboard(context);
-				wl_surface_damage_buffer(context->Surface, 0, 0, buffer->Width, buffer->Height);
-				break;
-			default:
-				break;
-		}
-		context->DirtyState = DS_None;
-	}
-
-
-	//printf("refreshing %d invalidated keys\n", Queue_Count(&context->DirtyKeys));
-	if (!Queue_IsEmpty(&context->DirtyKeys))
-	{
-
-		if (!buffer)
-		{
-			if (!FindAvailableBuffer(context, false))
-				return; // no buffers available, return without affecting the queue
-
-			buffer = FindAvailableBuffer(context, true);
-			if (buffer == NULL || buffer->Buffer == NULL)
-				return;
-
-			redrawing = true;
-
-			CreateGraphicsFromBuffer(buffer, context, &graphics);
-			wl_surface_attach(context->Surface, buffer->Buffer, 0, 0);
-		}
-
-
-		KeyIndex key;
-		uint8_t state;
-		while (Queue_Pop(&context->DirtyKeys, &key, &state))
-		{
-			DrawKey(context, &graphics, key, state);
-		}
-
-	}
-
-	if (redrawing)
-	{
-		wl_surface_commit(context->Surface);
-
-		clock_gettime(CLOCK_MONOTONIC, &clock2);
-
-		unsigned long long dUsecs = (clock2.tv_sec - clock1.tv_sec) * 1'000'000 + (clock2.tv_nsec - clock1.tv_nsec) / 1000;
-		//printf("Render: %.2fms\n", (double)dUsecs * 0.001);
-	}
-};
-
-void CreateGraphicsFromBuffer(struct Buffer* buffer, struct AppContext* context, struct Graphics* result)
-{
-	result->Buffer   = buffer->Data;
-	result->WlBuffer = buffer->Buffer;
-	result->Width    = buffer->Width;
-	result->Height   = buffer->Height;
-	result->Stride   = buffer->Stride;
-	result->Font     = context->Font_CharKeys;
-};
-
-void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state)
-{
-	float x = context->StartX + key.cluster * context->KeyboardClusterGap;
-	float y = context->StartY + (key.row % 5) * context->RowHeight;
-	float width = context->StandardKeyWidth;
-	float height = context->RowHeight;
-	char keyChar = KEYCHARS[CHARINDEXFORKEYINDEX(key, context->HeldModifiers)];
-	//char keyChar = linearRow >= 4 ? KEYCHARS[4*16 + (linearRow - 4) * 4 + key.key] : KEYCHARS[linearRow * 16 + key.key];
-	switch (key.cluster)
-	{
-		case 2:
-		{
-			x += 3 * context->StandardKeyWidth;
-			if (key.row == 4)
-			{
-				if (key.key == 0)
-					width *= 2;
-				else
-					x += context->StandardKeyWidth;
-			}
-			else if ((key.row == 1 && key.key == 3) || (key.row == 3 && key.key == 3))
-			{
-				height *= 2;
-			}
-		} goto AddMainKeyboardToX;
-		case 1:
-		{
-			if (key.row == 3 && key.key == 0)
-				x += context->StandardKeyWidth;
-		AddMainKeyboardToX:
-			x += 14.9 * context->StandardKeyWidth;
-			x += key.key * context->StandardKeyWidth;
-		} break;
-		case 0:
-		{
-			const float* widths = &KEYWIDTHS[16 * key.row];
-			for (size_t i = 0; i < key.key; ++i)
-				x += widths[i] * context->StandardKeyWidth;
-			width = widths[key.key] * context->StandardKeyWidth;
-		} break;
-	}
-	width -= context->KeySpacing;
-	height -= context->KeySpacing;
-
-	SetBackgroundColourByState(state, graphics);
-	DrawRectangle(graphics, (int)x, (int)y, (int)width, (int)height);
-	SetTextColourByState(state, graphics);
-	if (keyChar > ' ')
-	{
-		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
-		FP266 yf = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 5) * 64.0f);
-		Graphics_SetFont(graphics, context->Font_CharKeys);
-		DrawChar(graphics, keyChar, &xf, &yf, NULL);
-	}
-	else if (keyChar < ' ')
-	{
-		const struct TextCache* cache = &((struct TextCache*)&context->TextCache)[(int)keyChar];
-		//printf("Attempting to draw text for key %d.%d.%d (%Xh)\n", key.cluster, key.row, key.key, key.raw);
-		Graphics_SetFont(graphics, context->Font_WordKeys);
-		float fontHeight = (context->Font_WordKeys->ascender - context->Font_WordKeys->descender) / 64.0f;
-		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
-		FP266 yf = (FP266)((y + 0.5f * (context->RowHeight - context->KeySpacing) - 0.8f * (fontHeight)) * 64.0f);
-		yf += cache->Top << 6;
-		//printf("Drawing %dx%dpx at (%.1f,%.1f)\n", cache->Bitmap.width, cache->Bitmap.rows, (float)xf / 64.0f, (float)yf / 64.0f);
-		Graphics_SetFont(graphics, context->Font_CharKeys);
-		DrawGlyph(graphics, &cache->Bitmap, xf >> 6, yf >> 6);
-	}
-
-	wl_surface_damage_buffer(context->Surface, (int)x, (int)y, (int)width, (int)height);
-};
 
 static void HandleSignal(int signo);
 static void ReleaseAllKeys(struct AppContext* context);
@@ -498,7 +318,7 @@ int main(int argc, const char* argv[])
 	//assert(context.Touch != NULL);
 	if (!context.IsToplevel)
 	{
-		context.Layer   = zwlr_layer_shell_v1_get_layer_surface(context.Shell, context.Surface, context.Outputs[context.TargetOutputIndex].Handle, ZWLR_LAYER_SHELL_V1_LAYER_TOP, "keyboard");
+		context.Layer   = zwlr_layer_shell_v1_get_layer_surface(context.Shell, context.Surface, context.Outputs[context.TargetOutputIndex].Handle, ZWLR_LAYER_SHELL_V1_LAYER_OVERLAY, "keyboard");
 		assert(context.Layer != NULL);
 
 		if (zwlr_layer_surface_v1_add_listener(context.Layer, &s_layerSurfaceListener, &context) != 0)
@@ -964,7 +784,7 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 		x = context->StartX;
 		for (i = 0; i < KEYSPERROW[row]; x += KEYWIDTHS[row * 16 + i++] * context->StandardKeyWidth)
 		{
-			const char c = KEYCHARS[row * 16 + i];
+			const char c = row == 4 && context->KeyboardDisplayType == 0 ? KEYCHARS[KEYCHARS_COMPACTOFFSET + i ] : KEYCHARS[row * 16 + i];
 			const float keyWidth = context->StandardKeyWidth * KEYWIDTHS[row * 16 + i] - gap;
 			if (c < ' ')
 			{
@@ -1047,7 +867,7 @@ void DrawRow(struct Graphics* graphics, struct AppContext* context, int row)
 		keyStates = context->KeyStates_NumPad[row-10];
 	uint32_t state = keyStates;
 
-	const char* const chars = &KEYCHARS[CHARINDEXFORKEY(row/5, row%5, 0, context->HeldModifiers)];
+	const char* const chars = row == 4 && context->KeyboardDisplayType == 0 ? &KEYCHARS[KEYCHARS_COMPACTOFFSET] : &KEYCHARS[CHARINDEXFORKEY(row/5, row%5, 0, context->HeldModifiers)];
 	const int nKeys = KEYSPERROW[row];
 	if (row >= 5)
 		goto ExtendedKeyboard;
@@ -1827,7 +1647,7 @@ void SendKey(struct AppContext* context, KeyIndex index, int state, uint32_t tim
 	switch (index.cluster)
 	{
 		case 0:
-			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, keyCodes[index.row * 16 + index.key], state);
+			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, index.row == 4 && context->KeyboardDisplayType == 0 ? keyCodes[KEYCODES_COMPACTOFFSET + index.key] : keyCodes[index.row * 16 + index.key], state);
 			break;
 		case 1:
 			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, keyCodes[(16 * 5) + index.row * 4 + index.key], state);

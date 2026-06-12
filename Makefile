@@ -1,5 +1,5 @@
 PROJECT := wayboard
-SOURCES += main.c pointer.c touch.c virtualKeyboard.c graphics.c common.h queue.c queue.h futex.h futex.c
+SOURCES += main.c pointer.c touch.c virtualKeyboard.c graphics.c common.h queue.c queue.h futex.h futex.c graphics.h
 PROTOCOLS += virtual-keyboard-unstable-v1
 PROTOCOLS += input-method-unstable-v2
 PROTOCOLS += wayland-protocols/stable/xdg-shell/xdg-shell

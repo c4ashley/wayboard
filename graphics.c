@@ -4,6 +4,112 @@
 #endif
 #include <immintrin.h>
 
+void CreateGraphicsFromBuffer(struct Buffer* buffer, struct AppContext* context, struct Graphics* result)
+{
+	result->Buffer   = buffer->Data;
+	result->WlBuffer = buffer->Buffer;
+	result->Width    = buffer->Width;
+	result->Height   = buffer->Height;
+	result->Stride   = buffer->Stride;
+	result->Font     = context->Font_CharKeys;
+};
+
+void RefreshInvalidatedRegions(struct AppContext* context)
+{
+	struct Buffer* buffer = NULL;
+	struct Graphics graphics;
+	bool redrawing = false;
+
+		struct timespec clock1, clock2;
+		clock_gettime(CLOCK_MONOTONIC, &clock1);
+
+	if (context->DirtyState)
+	{
+		if (!FindAvailableBuffer(context, false))
+			return; // no buffers available, return without affecting the queue
+
+		buffer = FindAvailableBuffer(context, true);
+		if (buffer == NULL || buffer->Buffer == NULL)
+			return;
+
+		redrawing = true;
+
+		CreateGraphicsFromBuffer(buffer, context, &graphics);
+		wl_surface_attach(context->Surface, buffer->Buffer, 0, 0);
+
+		switch (context->DirtyState)
+		{
+			case DS_LetterKeys:
+				DrawRow(&graphics, context, 1);
+				DrawRow(&graphics, context, 2);
+				DrawRow(&graphics, context, 3);
+				DrawRow(&graphics, context, 4);
+				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)(context->StartY + context->RowHeight), (int)(14.9 * context->StandardKeyWidth), (int)(4 * context->RowHeight));
+				break;
+			case DS_NumericKeys:
+				DrawRow(&graphics, context, 0);
+				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(1 * context->RowHeight));
+				break;
+			case DS_WholeMainKeyboard:
+				DrawRow(&graphics, context, 0);
+				DrawRow(&graphics, context, 1);
+				DrawRow(&graphics, context, 2);
+				DrawRow(&graphics, context, 3);
+				//DrawRow(&graphics, context, 4);
+				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(5 * context->RowHeight));
+				break;
+			case DS_WholeSurface:
+				// TODO: Refactor DrawKeyboard. DrawKeyboard will attempt to obtain a buffer, which it will be unable to do.
+				DrawKeyboard(context);
+				wl_surface_damage_buffer(context->Surface, 0, 0, buffer->Width, buffer->Height);
+				break;
+			default:
+				break;
+		}
+		context->DirtyState = DS_None;
+	}
+
+
+	//printf("refreshing %d invalidated keys\n", Queue_Count(&context->DirtyKeys));
+	if (!Queue_IsEmpty(&context->DirtyKeys))
+	{
+
+		if (!buffer)
+		{
+			if (!FindAvailableBuffer(context, false))
+				return; // no buffers available, return without affecting the queue
+
+			buffer = FindAvailableBuffer(context, true);
+			if (buffer == NULL || buffer->Buffer == NULL)
+				return;
+
+			redrawing = true;
+
+			CreateGraphicsFromBuffer(buffer, context, &graphics);
+			wl_surface_attach(context->Surface, buffer->Buffer, 0, 0);
+		}
+
+
+		KeyIndex key;
+		uint8_t state;
+		while (Queue_Pop(&context->DirtyKeys, &key, &state))
+		{
+			DrawKey(context, &graphics, key, state);
+		}
+
+	}
+
+	if (redrawing)
+	{
+		wl_surface_commit(context->Surface);
+
+		clock_gettime(CLOCK_MONOTONIC, &clock2);
+
+		unsigned long long dUsecs = (clock2.tv_sec - clock1.tv_sec) * 1'000'000 + (clock2.tv_nsec - clock1.tv_nsec) / 1000;
+		//printf("Render: %.2fms\n", (double)dUsecs * 0.001);
+	}
+};
+
 void Graphics_Clear(struct Graphics* graphics)
 {
 	Graphics_Fill(graphics, 0, 0, graphics->Width, graphics->Height);
@@ -32,7 +138,7 @@ void Graphics_SetFont(struct Graphics* graphics, FT_Face font)
 	graphics->Font = font;
 }
 
-static float blend(float a, float b, float amount)
+static inline float blend(float a, float b, float amount)
 {
 	return a + amount * (b - a);
 }
@@ -237,6 +343,77 @@ void DrawChar(struct Graphics* graphics, char c, FP266* x, FP266* y, [[maybe_unu
 	*x += graphics->Font->glyph->advance.x;
 	*y += graphics->Font->glyph->advance.y;
 }
+
+void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state)
+{
+	float x = context->StartX + key.cluster * context->KeyboardClusterGap;
+	float y = context->StartY + (key.row % 5) * context->RowHeight;
+	float width = context->StandardKeyWidth;
+	float height = context->RowHeight;
+	char keyChar = key.cluster == 0 && key.row == 4 && context->KeyboardDisplayType == 0 ? KEYCHARS[KEYCHARS_COMPACTOFFSET + key.key] : KEYCHARS[CHARINDEXFORKEYINDEX(key, context->HeldModifiers)];
+	//char keyChar = linearRow >= 4 ? KEYCHARS[4*16 + (linearRow - 4) * 4 + key.key] : KEYCHARS[linearRow * 16 + key.key];
+	switch (key.cluster)
+	{
+		case 2:
+		{
+			x += 3 * context->StandardKeyWidth;
+			if (key.row == 4)
+			{
+				if (key.key == 0)
+					width *= 2;
+				else
+					x += context->StandardKeyWidth;
+			}
+			else if ((key.row == 1 && key.key == 3) || (key.row == 3 && key.key == 3))
+			{
+				height *= 2;
+			}
+		} goto AddMainKeyboardToX;
+		case 1:
+		{
+			if (key.row == 3 && key.key == 0)
+				x += context->StandardKeyWidth;
+		AddMainKeyboardToX:
+			x += 14.9 * context->StandardKeyWidth;
+			x += key.key * context->StandardKeyWidth;
+		} break;
+		case 0:
+		{
+			const float* widths = &KEYWIDTHS[16 * key.row];
+			for (size_t i = 0; i < key.key; ++i)
+				x += widths[i] * context->StandardKeyWidth;
+			width = widths[key.key] * context->StandardKeyWidth;
+		} break;
+	}
+	width -= context->KeySpacing;
+	height -= context->KeySpacing;
+
+	SetBackgroundColourByState(state, graphics);
+	DrawRectangle(graphics, (int)x, (int)y, (int)width, (int)height);
+	SetTextColourByState(state, graphics);
+	if (keyChar > ' ')
+	{
+		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
+		FP266 yf = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 5) * 64.0f);
+		Graphics_SetFont(graphics, context->Font_CharKeys);
+		DrawChar(graphics, keyChar, &xf, &yf, NULL);
+	}
+	else if (keyChar < ' ')
+	{
+		const struct TextCache* cache = &((struct TextCache*)&context->TextCache)[(int)keyChar];
+		//printf("Attempting to draw text for key %d.%d.%d (%Xh)\n", key.cluster, key.row, key.key, key.raw);
+		Graphics_SetFont(graphics, context->Font_WordKeys);
+		float fontHeight = (context->Font_WordKeys->ascender - context->Font_WordKeys->descender) / 64.0f;
+		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
+		FP266 yf = (FP266)((y + 0.5f * (context->RowHeight - context->KeySpacing) - 0.8f * (fontHeight)) * 64.0f);
+		yf += cache->Top << 6;
+		//printf("Drawing %dx%dpx at (%.1f,%.1f)\n", cache->Bitmap.width, cache->Bitmap.rows, (float)xf / 64.0f, (float)yf / 64.0f);
+		Graphics_SetFont(graphics, context->Font_CharKeys);
+		DrawGlyph(graphics, &cache->Bitmap, xf >> 6, yf >> 6);
+	}
+
+	wl_surface_damage_buffer(context->Surface, (int)x, (int)y, (int)width, (int)height);
+};
 
 #if 0
 void DrawCharCentred(struct Graphics* graphics, char c, FP266* x, FP266* y)
