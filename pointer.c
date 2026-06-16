@@ -88,6 +88,127 @@ void pointerAxisRelativeDirection([[maybe_unused]] void *data,
 				                  [[maybe_unused]] uint32_t direction)
 { printf("pointerAxisRelativeDirection(%u, %u)\n", axis, direction); };
 
+static void KeyPress(struct AppContext* context, KeyIndex key, uint32_t time)
+{
+	Modifiers_t modifierFlag = GetModifierFlagForKey(key);
+	if (modifierFlag == 0)
+	{
+		SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
+		SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
+	}
+	else
+	{
+		if (modifierFlag & MOD_LOCKMASK)
+		{
+			SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
+			SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
+			if (modifierFlag & MOD_CAPSLOCK_MASK)
+				context->DirtyState = DS_WholeMainKeyboard;
+			else if (modifierFlag & MOD_FN_MASK)
+				context->DirtyState = DS_NumericKeys;
+		}
+		else
+		{
+			if (!(context->HeldModifiers & modifierFlag))
+			{
+				SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
+				SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
+				if (modifierFlag & MOD_SHIFTMASK)
+					context->DirtyState = DS_WholeMainKeyboard;
+			}
+			else
+			{
+				SendKey(context, key, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+				ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
+				if (modifierFlag & MOD_SHIFTMASK)
+					context->DirtyState = DS_WholeMainKeyboard;
+			}
+		}
+		context->HeldModifiers ^= modifierFlag;
+	}
+}
+
+static void ReleaseHeldModifiers(struct AppContext* context, uint32_t time)
+{
+	if (context->HeldModifiers & MOD_SHIFTMASK)
+	{
+		context->DirtyState = DS_WholeMainKeyboard;
+		if (context->HeldModifiers & MOD_LSHIFT)
+		{
+			ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 3, .key = 0 }, false);
+			SendKey(context, (KeyIndex) {.cluster=0, .row = 3, .key = 0 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+		}
+		if (context->HeldModifiers & MOD_RSHIFT)
+		{
+			ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 3, .key = 11 }, false);
+			SendKey(context, (KeyIndex) {.cluster=0, .row = 3, .key = 11 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+		}
+	}
+	if (context->HeldModifiers & MOD_LCTRL)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 0 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 0 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	if (context->HeldModifiers & MOD_RCTRL)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 7 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 7 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	if (context->HeldModifiers & MOD_LALT)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 2 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 2 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	if (context->HeldModifiers & MOD_RALT)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 4 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 4 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	if (context->HeldModifiers & MOD_LSUPER)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 1 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 1 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	if (context->HeldModifiers & MOD_RSUPER)
+	{
+		ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 5 }, false);
+		SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 5 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+	}
+	context->HeldModifiers &= MOD_LOCKMASK;
+}
+
+static void KeyRelease(struct AppContext* context, KeyIndex key, uint32_t time)
+{
+	Modifiers_t modifierFlag = GetModifierFlagForKey(key);
+	if (!modifierFlag)
+	{
+		SendKey(context, context->PointerPressed, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+		ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, context->PointerPressed, false);
+
+		if (context->HeldModifiers)
+			ReleaseHeldModifiers(context, time);
+	}
+	else
+	{
+		// latch or unlatch "lock" keys on release
+		// don't release regular modifiers, because they're toggled when clicked by the mouse, so they
+		// get released on a second mouse-click
+		if (modifierFlag & MOD_LOCKMASK)
+		{
+			SendKey(context, key, WL_KEYBOARD_KEY_STATE_RELEASED, time);
+			if (context->HeldModifiers & (modifierFlag << 1))
+			{
+				ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
+				if (modifierFlag & MOD_CAPSLOCK_MASK)
+					context->DirtyState = DS_LetterKeys;
+				else if (modifierFlag & MOD_FN_MASK)
+					context->DirtyState = DS_NumericKeys;
+			}
+			context->HeldModifiers ^= (modifierFlag) | (modifierFlag << 1);
+		}
+	}
+}
+
 void pointerButton([[maybe_unused]] void *data,
 		           [[maybe_unused]] struct wl_pointer *wl_pointer,
 		           [[maybe_unused]] uint32_t serial,
@@ -108,41 +229,7 @@ void pointerButton([[maybe_unused]] void *data,
 				context->PointerPressed = context->PointerHighlight;
 				context->IsMouseDown = true;
 				key = context->PointerPressed;
-
-				Modifiers_t modifierFlag = GetModifierFlagForKey(key);
-				if (modifierFlag != 0)
-				{
-					context->HeldModifiers ^= modifierFlag;
-					if (modifierFlag & MOD_LOCKMASK)
-					{
-						SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
-						SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
-						if (modifierFlag & MOD_CAPSLOCK_MASK)
-							context->DirtyState = DS_WholeMainKeyboard;
-					}
-					else
-					{
-						if (context->HeldModifiers & modifierFlag)
-						{
-							SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
-							SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
-							if (modifierFlag & MOD_SHIFTMASK)
-								context->DirtyState = DS_WholeMainKeyboard;
-						}
-						else
-						{
-							SendKey(context, key, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-							ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
-							if (modifierFlag & MOD_SHIFTMASK)
-								context->DirtyState = DS_WholeMainKeyboard;
-						}
-					}
-				}
-				else
-				{
-					SendKey(context, key, WL_KEYBOARD_KEY_STATE_PRESSED, time);
-					SetHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
-				}
+				KeyPress(context, key, time);
 			}
 		}
 		else if (state == WL_POINTER_BUTTON_STATE_RELEASED)
@@ -151,75 +238,7 @@ void pointerButton([[maybe_unused]] void *data,
 			if (context->IsMouseDown && KeyIndexIsValid(context->PointerPressed))
 			{
 				key = context->PointerPressed;
-				Modifiers_t modifierFlag = GetModifierFlagForKey(key);
-				if (!modifierFlag)
-				{
-					SendKey(context, context->PointerPressed, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-					ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, context->PointerPressed, false);
-
-					if (context->HeldModifiers)
-					{
-						if (context->HeldModifiers & MOD_SHIFTMASK)
-						{
-							context->DirtyState = DS_WholeMainKeyboard;
-							if (context->HeldModifiers & MOD_LSHIFT)
-							{
-								ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 3, .key = 0 }, false);
-								SendKey(context, (KeyIndex) {.cluster=0, .row = 3, .key = 0 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-							}
-							if (context->HeldModifiers & MOD_RSHIFT)
-							{
-								ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 3, .key = 11 }, false);
-								SendKey(context, (KeyIndex) {.cluster=0, .row = 3, .key = 11 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-							}
-						}
-						if (context->HeldModifiers & MOD_LCTRL)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 0 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 0 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						if (context->HeldModifiers & MOD_RCTRL)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 7 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 7 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						if (context->HeldModifiers & MOD_LALT)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 2 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 2 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						if (context->HeldModifiers & MOD_RALT)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 4 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 4 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						if (context->HeldModifiers & MOD_LSUPER)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 1 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 1 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						if (context->HeldModifiers & MOD_RSUPER)
-						{
-							ClearHighlightFlag(context, 3, (KeyIndex) {.cluster=0, .row = 4, .key = 5 }, false);
-							SendKey(context, (KeyIndex) {.cluster=0, .row = 4, .key = 5 }, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						}
-						context->HeldModifiers &= MOD_LOCKMASK;
-					}
-				}
-				else
-				{
-					if (modifierFlag & MOD_LOCKMASK)
-					{
-						SendKey(context, key, WL_KEYBOARD_KEY_STATE_RELEASED, time);
-						if (context->HeldModifiers & (modifierFlag << 1))
-						{
-							ClearHighlightFlag(context, HIGHLIGHT_STATE_PRESSED, key, false);
-							if (modifierFlag & MOD_CAPSLOCK_MASK)
-								context->DirtyState = DS_WholeMainKeyboard;
-						}
-						context->HeldModifiers ^= (modifierFlag) | (modifierFlag << 1);
-					}
-				}
+				KeyRelease(context, key, time);
 				context->PointerPressed = KEYINDEX_INVALID;
 				context->IsMouseDown = false;
 			}
@@ -230,9 +249,6 @@ void pointerButton([[maybe_unused]] void *data,
 		//context->ShowContextMenu = true;
 		//context->ContextMenuLocation = {surface_x, surface_y};
 	}
-	return;
-
-Modifier:
 };
 
 struct wl_pointer_listener s_pointerListener = {

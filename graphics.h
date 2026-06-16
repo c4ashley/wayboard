@@ -20,5 +20,16 @@ void Graphics_Fill(struct Graphics* graphics, size_t x, size_t y, size_t width, 
 void Graphics_SetFont(struct Graphics* graphics, FT_Face font);
 void DrawGlyph(struct Graphics* graphics, const FT_Bitmap* glyph, int startX, int startY);
 void DrawGlyphOver(struct Graphics* graphics, const FT_Bitmap* glyph, int startX, int startY);
+void TryDrawCachedChar(struct Graphics* graphics, char c, FP266* x, FP266* y, [[maybe_unused]] FT_UInt* previousGlyphForKerning, const struct GlyphCache* glyphs);
 void DrawChar(struct Graphics* graphics, char c, FP266* x, FP266* y, [[maybe_unused]] FT_UInt* previousGlyphForKerning);
 void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state);
+void Graphics_Clear(struct Graphics* graphics);
+void Graphics_Fill(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height);
+void Graphics_SetFont(struct Graphics* graphics, FT_Face font);
+void DrawGlyph(struct Graphics* graphics, const FT_Bitmap* glyph, int startX, int startY);
+//void DrawText(struct Graphics* graphics, const char* text, int* x, int* y);
+void DrawChar(struct Graphics* graphics, char c, FP266* x, FP266* y, FT_UInt* previousGlyphForKerning);
+//void DrawCharCentred(struct Graphics* graphics, char text, FP266* x, FP266* y);
+void DrawRow(struct Graphics* graphics, struct AppContext* context, int row);
+void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state);
+static inline void DrawRectangle(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height) { Graphics_Fill(graphics, x, y, width, height); };

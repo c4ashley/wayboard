@@ -1,6 +1,6 @@
-- num lock
+- stop using so many hardcoded values, especially if I want more keyboard layouts
 - right shift doesn't work (maybe the other right modifiers also don't?)
-- Function Keys row (especially Esc, Scroll Lock, Pause, PrtScr)
+- Function Keys row: Find a place for Scroll Lock, Pause, etc
 - Alternate layout options
   - Smaller keyboards still need *some* way to use navigation keys
   - Nipple?

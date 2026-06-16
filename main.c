@@ -17,7 +17,6 @@
 
 #include "graphics.h"
 
-
 struct wl_registry_listener s_registryListener;
 struct wl_output_listener s_outputListener;
 struct wl_seat_listener s_seatListener;
@@ -34,8 +33,6 @@ struct zwp_input_method_v2_listener s_inputMethodListener;
 struct zwp_input_method_keyboard_grab_v2_listener s_inputGrabListener;
 #endif
 
-
-
 static void PrecalculateKeyGeometry(struct AppContext* context);
 // @param touch: Increases the hitbox for touch input
 static KeyIndex GetKeyAtLocation(float x, float y, const struct AppContext* context, bool touch);
@@ -45,34 +42,24 @@ static void SetTextColourByState(uint32_t state, struct Graphics* graphics);
 static void SetBackgroundColourByState(uint32_t state, struct Graphics* graphics);
 static uint32_t SetBackgroundColourByKey(uint32_t stateField, int key, uint32_t currentState, struct Graphics* graphics);
 static void UpdateModifierUi(struct AppContext* context, xkb_mod_mask_t locked, xkb_mod_mask_t depressed);
-static FP266 CalculateStringWidth(FT_Face font, const char* text);
 
 // @param Modifiers: When used for KEYCHARS, Modifiers indicates the held modifier keys. For other lists, this should always be 0.
-#define CHARINDEXFORKEY(Cluster, Row, Key, Modifiers) ({ \
+#define CHARINDEXFORKEY(Cluster, Row, Key) ({ \
 			int offset = 0;\
-			int row__ = (Cluster) * 5 + (Row), key__ = (Key), modifiers__ = (Modifiers);\
+			int row__ = (Cluster) * 5 + (Row), key__ = (Key);\
 			if (row__ < 5)\
-			{\
 				offset = row__ * 16;\
-				if (row__ < 4) \
-				{\
-					if (modifiers__ & MOD_SHIFTMASK) \
-						offset += modifiers__ & MOD_CAPSLOCK_MASK ? KEYCHARS_SHIFTCAPSOFFSET : KEYCHARS_SHIFTOFFSET; \
-					else if (modifiers__ & MOD_CAPSLOCK_MASK) \
-						offset += KEYCHARS_CAPSOFFSET; \
-				} \
-			}\
 			else\
-			{\
 				offset = row__ * 4 + 0x50 - 20;\
-			}\
 			offset += key__;\
 			offset; })
-#define CHARINDEXFORKEYINDEX(keyIndex, modifiers) CHARINDEXFORKEY((keyIndex).cluster, (keyIndex).row, (keyIndex).key, (modifiers))
+#define CHARINDEXFORKEYINDEX(keyIndex) CHARINDEXFORKEY((keyIndex).cluster, (keyIndex).row, (keyIndex).key)
+#define FKEY(number) (0xF0 + (number))
 static const int KEYCHARS_SHIFTOFFSET = (16 * 5) + (4 * 10);
 static const int KEYCHARS_CAPSOFFSET = (16 * 5) + (4 * 10) + (16 * 4);
 static const int KEYCHARS_SHIFTCAPSOFFSET = (16 * 5) + (4 * 10) + (16 * 4) + (16 * 4);
 static const int KEYCHARS_COMPACTOFFSET = (16 * 5) + (4 * 10) + (16 * 4) + (16 * 4) + (16 * 4);
+static const int KEYCHARS_FKEYOFFSET = (16 * 5) + (4 * 10) + (16 * 4) + (16 * 4) + (16 * 4) + 16;
 static const char KEYCHARS[] = {
 	// --- main keyboard ---
 	/* 0*/ '`','1','2','3','4','5','6','7','8','9','0','-','=',TEXTCACHEINDEX(Backspace),' ',' ',
@@ -82,7 +69,7 @@ static const char KEYCHARS[] = {
 	/*  */     'a','s','d','f','g','h','j','k','l',';','\'',TEXTCACHEINDEX(Enter),' ',' ',' ',
 	/*30*/ TEXTCACHEINDEX(Shift),
 	/*  */     'z','x','c','v','b','n','m',',','.','/',TEXTCACHEINDEX(Shift),' ',' ',' ',' ',
-	/*40*/ TEXTCACHEINDEX(Ctrl), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Alt), ' ', TEXTCACHEINDEX(Alt), TEXTCACHEINDEX(Menu), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Ctrl), ' ',' ',' ',' ',' ',' ',' ',' ',
+	/*40*/ TEXTCACHEINDEX(Ctrl), TEXTCACHEINDEX(Fn), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Alt), ' ', TEXTCACHEINDEX(Alt), TEXTCACHEINDEX(Menu), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Ctrl), ' ',' ',' ',' ',' ',' ',' ',
 	// --- navigation keys ---
 	/*50*/ TEXTCACHEINDEX(Insert), TEXTCACHEINDEX(Home), TEXTCACHEINDEX(PageUp),  ' ',
 	/*54*/ TEXTCACHEINDEX(Delete), TEXTCACHEINDEX(End),  TEXTCACHEINDEX(PageDown),' ',
@@ -120,23 +107,27 @@ static const char KEYCHARS[] = {
 	/*A8*/ TEXTCACHEINDEX(Shift),
 	           'z','x','c','v','b','n','m','<','>','?',TEXTCACHEINDEX(Shift),' ',' ',' ',' ',
     // --- compact space row (arrows at end)
-	/*B8*/ TEXTCACHEINDEX(Ctrl), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Alt), ' ', TEXTCACHEINDEX(Left), TEXTCACHEINDEX(Down), TEXTCACHEINDEX(Up), TEXTCACHEINDEX(Right), ' ',' ',' ',' ',' ',' ',' ',' ',
+	/*B8*/ TEXTCACHEINDEX(Ctrl), TEXTCACHEINDEX(Fn), TEXTCACHEINDEX(Super), TEXTCACHEINDEX(Alt), ' ', TEXTCACHEINDEX(Left), TEXTCACHEINDEX(Down), TEXTCACHEINDEX(Up), TEXTCACHEINDEX(Right), ' ',' ',' ',' ',' ',' ',' ',
+    // --- F-key row
+	//     FKEY(0) is actually ESC, but we do some weird edge-case handling to translate it
+	/*C8*/ FKEY(0), FKEY(1), FKEY(2),FKEY(3),FKEY(4),FKEY(5),FKEY(6),FKEY(7),FKEY(8),FKEY(9),FKEY(10),FKEY(11),FKEY(12),TEXTCACHEINDEX(Backspace),0,0,
 };
-static const uint8_t KEYSPERROW[] = {14, 14, 13, 12, 8,
+static const uint8_t KEYSPERROW[] = {14, 14, 13, 12, 9,
 	                             3, 3, 0, 2, 3,
 								 4, 4, 3, 4, 2 };
 static const float KEYWIDTHS[] = {   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1, 1.9, 0, 0, 
                                    1.5,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1, 1.4, 0, 0,
                                    1.8,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1, 2.1,   0, 0, 0,
                                    2.2,   1,   1,   1,   1,   1,   1,   1,   1,   1,   1, 2.7,   0,   0, 0, 0,
-                                   1.4,   1, 1.1,   7, 1.1,   1,   1, 1.3,   0,   0,   0,   0,   0,   0, 0, 0 };
+                                   1.2,   1,   1,   1, 6.3, 1.1,   1,   1, 1.3,   0,   0,   0,   0,   0, 0, 0, };
 
-static const uint8_t keyCodes[] = {
+
+static const uint8_t KEYCODES[] = {
 KEY_GRAVE, KEY_1, KEY_2, KEY_3, KEY_4, KEY_5, KEY_6, KEY_7, KEY_8, KEY_9, KEY_0, KEY_MINUS, KEY_EQUAL, KEY_BACKSPACE, 0, 0,
 KEY_TAB, KEY_Q, KEY_W, KEY_E, KEY_R, KEY_T, KEY_Y, KEY_U, KEY_I, KEY_O, KEY_P, KEY_LEFTBRACE, KEY_RIGHTBRACE, KEY_BACKSLASH, 0, 0,
 KEY_CAPSLOCK, KEY_A, KEY_S, KEY_D, KEY_F, KEY_G, KEY_H, KEY_J, KEY_K, KEY_L, KEY_SEMICOLON, KEY_APOSTROPHE, KEY_ENTER, 0, 0, 0,
 KEY_LEFTSHIFT, KEY_Z, KEY_X, KEY_C, KEY_V, KEY_B, KEY_N, KEY_M, KEY_COMMA, KEY_DOT, KEY_SLASH, KEY_RIGHTSHIFT, 0, 0, 0, 0,
-KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_RIGHTALT, KEY_MENU, KEY_RIGHTMETA, KEY_RIGHTCTRL, 0, 0, 0, 0, 0, 0, 0, 0,
+KEY_LEFTCTRL, KEY_RESERVED, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_RIGHTALT, KEY_MENU, KEY_RIGHTMETA, KEY_RIGHTCTRL, 0, 0, 0, 0, 0, 0, 0,
 
 KEY_INSERT, KEY_HOME, KEY_PAGEUP, 0,
 KEY_DELETE, KEY_END, KEY_PAGEDOWN, 0,
@@ -150,28 +141,25 @@ KEY_KP4, KEY_KP5, KEY_KP6, 0,
 KEY_KP1, KEY_KP2, KEY_KP3, KEY_KPENTER,
 KEY_KP0, KEY_KPDOT, KEY_KPDOT, 0,
 
-KEY_LEFTCTRL, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_LEFT, KEY_DOWN , KEY_UP, KEY_RIGHT, 0, 0, 0, 0, 0, 0, 0, 0,
+// compact bottom row of main keyboard (arrows at end)
+KEY_LEFTCTRL, KEY_RESERVED, KEY_LEFTMETA, KEY_LEFTALT, KEY_SPACE, KEY_LEFT, KEY_DOWN , KEY_UP, KEY_RIGHT, 0, 0, 0, 0, 0, 0, 0,
+
+// F-key row
+KEY_ESC, KEY_F1, KEY_F2, KEY_F3, KEY_F4, KEY_F5, KEY_F6, KEY_F7, KEY_F8, KEY_F9, KEY_F10, KEY_F11, KEY_F12, 0, 0, 0,
 };
 
-static const size_t KEYCODES_COMPACTOFFSET = (16 * 5) + (10 * 4);
+static const size_t KEYCODES_FKEYOFFSET    = (16 * 5) + (4 * 10) + 16;
+static const size_t KEYCODES_COMPACTOFFSET = (16 * 5) + (4 * 10);
+static const size_t XPOS_SHIFTOFFSET       = (16 * 5) + (4 * 10);
+static const size_t XPOS_FKEYOFFSET        = (16 * 5) + (4 * 10) + (16 * 5);
 
 static struct timespec s_clockResolution;
 
-void Graphics_Clear(struct Graphics* graphics);
-void Graphics_Fill(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height);
-void Graphics_SetFont(struct Graphics* graphics, FT_Face font);
-void DrawGlyph(struct Graphics* graphics, const FT_Bitmap* glyph, int startX, int startY);
-//void DrawText(struct Graphics* graphics, const char* text, int* x, int* y);
-void DrawChar(struct Graphics* graphics, char c, FP266* x, FP266* y, FT_UInt* previousGlyphForKerning);
-//void DrawCharCentred(struct Graphics* graphics, char text, FP266* x, FP266* y);
-void DrawRow(struct Graphics* graphics, struct AppContext* context, int row);
 
 void SendKey(struct AppContext* context, KeyIndex key, int state, uint32_t time);
 void SetHighlightFlag(struct AppContext* context, uint32_t flag, KeyIndex index, bool deferRedraw);
 void ClearHighlightFlag(struct AppContext* context, uint32_t flag, KeyIndex index, bool deferRedraw);
 void DrawKeyboard(struct AppContext* context);
-void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key, uint8_t state);
-static inline void DrawRectangle(struct Graphics* graphics, size_t x, size_t y, size_t width, size_t height) { Graphics_Fill(graphics, x, y, width, height); };
 
 void CreateBuffer(struct Buffer* buffer, int index, struct AppContext* context);
 void DestroyBuffer(struct Buffer* buffer);
@@ -201,8 +189,12 @@ int main(int argc, const char* argv[])
 	signal(SIGUSR2, HandleSignal);
 	signal(SIGINT,  HandleSignal);
 
+	memcpy(context.KeyCodes, KEYCODES, sizeof(context.KeyCodes));
+	memcpy(context.KeyChars, KEYCHARS, sizeof(context.KeyChars));
+
 	context.PointerHighlight = KEYINDEX_INVALID;
 	context.PointerPressed = KEYINDEX_INVALID;
+	context.Exclusive = true;
 	for (int i = 0; i < argc; ++i)
 	{
 		if (strcmp(argv[i], "--toplevel") == 0)
@@ -213,6 +205,10 @@ int main(int argc, const char* argv[])
 		{
 			++i;
 			context.PreferredOutputName = argv[i];
+		}
+		else if (strcmp(argv[i], "--nonexclusive") == 0)
+		{
+			context.Exclusive = false;
 		}
 	}
 
@@ -328,7 +324,8 @@ int main(int argc, const char* argv[])
 		}
 		zwlr_layer_surface_v1_set_size(context.Layer, 0, 380);
 		zwlr_layer_surface_v1_set_anchor(context.Layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM | ZWLR_LAYER_SURFACE_V1_ANCHOR_LEFT | ZWLR_LAYER_SURFACE_V1_ANCHOR_RIGHT);
-		zwlr_layer_surface_v1_set_exclusive_zone(context.Layer, 380);
+		if (context.Exclusive)
+			zwlr_layer_surface_v1_set_exclusive_zone(context.Layer, 380);
 #if LAYER_SHELL_VERSION > 4
 		//zwlr_layer_surface_v1_set_exclusive_edge(context.Layer, ZWLR_LAYER_SURFACE_V1_ANCHOR_BOTTOM);
 #endif
@@ -463,7 +460,7 @@ void ReleaseAllKeys(struct AppContext* context)
 		for (size_t j = 0, state = context->KeyStates_Keyboard[i]; state; ++j, state >>= 2)
 			if (state & HIGHLIGHT_STATE_PRESSED)
 				SendKey(context, (KeyIndex) {.cluster = 0, .row = i, .key = j}, WL_KEYBOARD_KEY_STATE_RELEASED, 0);
-		context->KeyStates_Keyboard[i] &= ~(HIGHLIGHT_STATE_PRESSED * 0x55555555);
+		context->KeyStates_Keyboard[i] &= ~(HIGHLIGHT_STATE_PRESSED * 0x55555555u);
 	}
 
 	for (size_t i = 0; i < countof(context->KeyStates_Navigation); ++i)
@@ -489,6 +486,9 @@ static inline void InvalidateKey(struct AppContext* context, KeyIndex key, uint8
 	Queue_Push(&context->DirtyKeys, key, state);
 };
 
+// Draws a glyph to our cache buffer, which is grayscale. No SIMD optimisations are done, unless performed
+// automatically by the compiler, because this function is intended for the smaller "Word" font, so glyphs
+// are expected to be fairly small, and at 1 byte per pixel, the total data is no larger.
 void DrawMonoGlyph(FT_Bitmap* dest, const FT_Bitmap* source, int x, int y)
 {
 	uint8_t* rowDest = &((uint8_t*)dest->buffer)[y * dest->pitch + x];
@@ -508,6 +508,9 @@ void DrawMonoGlyph(FT_Bitmap* dest, const FT_Bitmap* source, int x, int y)
 	}
 }
 
+// Same as `DrawMonoGlyph`, but accounts for transparency, allowing a glyph to be safely drawn over the
+// bounds of a previous glyph. Only necessary when "Advance" is less than a glyph's width, which is probably
+// only the case when kerning.
 void DrawMonoGlyphOver(FT_Bitmap* dest, const FT_Bitmap* source, int x, int y)
 {
 	const FT_UInt srcWidth = source->width;
@@ -519,8 +522,9 @@ void DrawMonoGlyphOver(FT_Bitmap* dest, const FT_Bitmap* source, int x, int y)
 	for (FT_UInt iy = 0; iy < srcHeight; ++iy, rowDest += dest->pitch, rowSrc += srcStride)
 	{
 		// In 99.9% of cases, we can be sure that overlapping glyphs will not have overlapping pixels.
-		// The only exception I can think of wxorould be on the antialiasing of ligatures, but I don't
-		// even know how to create ligatures, so it's a non-issue and we can safely use a naive ADD.
+		// The only exception I can think of would be on the antialiasing of ligatures, but I don't
+		// even know how to create ligatures, nor am I intending to use any, so it's a non-issue and
+		// we can safely use a naive ADD.
 		uint8_t* pDest = rowDest;
 		const uint8_t* pSrc = rowSrc;
 		for (ix = 0; ix < (long)srcWidth - 7; ix += 8, pDest += 8, pSrc += 8)
@@ -560,7 +564,7 @@ void DrawMonoGlyphOver(FT_Bitmap* dest, const FT_Bitmap* source, int x, int y)
 	}
 }
 
-// returns the width
+// returns the width, for using in geometry precalculations
 FP266 PrecacheString([[maybe_unused]] FT_Face font, const struct GlyphCache* glyphs, struct TextCache* cache, const char* text)
 {
 	FP266 width = 0;
@@ -568,7 +572,7 @@ FP266 PrecacheString([[maybe_unused]] FT_Face font, const struct GlyphCache* gly
 	int bottom, top;
 	const struct CachedGlyph* glyph;
 #if defined(USE_KERNING) && USE_KERNING
-	FT_UInt prevGlyph;
+	FT_UInt prevGlyph, glyphId;
 	bool stringHasOverlapKerning = false;
 	bool stringHasAnyKerning = false;
 	if (FT_HAS_KERNING(font))
@@ -692,6 +696,7 @@ void PrecacheGlyphs(struct AppContext* context, FT_Face font)
 	context->GlyphCache.Glyphs[0].Bitmap.Left   = font->glyph->bitmap_left;
 	context->GlyphCache.Glyphs[0].Bitmap.Top    = font->glyph->bitmap_top;
 
+#warning "Please be aware that only the necessary char glyphs. Make sure to keep the glyph cache consistent if we change any strings."
 	for (char c = 'A'; c <= 'W'; ++c)
 	{
 		if (c == 'J' || c == 'V')
@@ -737,6 +742,33 @@ void PrecacheGlyphs(struct AppContext* context, FT_Face font)
 	}
 }
 
+void PrecacheStrings(struct AppContext* context, FP266* halfwidthsOut)
+{
+	halfwidthsOut[TEXTCACHEINDEX(Ctrl     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Ctrl,      "CTRL")      >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Shift    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Shift,     "SHIFT")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Super    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Super,     "SUPER")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Enter    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Enter,     "ENTER")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Tab      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Tab,       "TAB")       >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Alt      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Alt,       "ALT")       >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(CapsLock )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.CapsLock,  "CAPS LOCK") >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Menu     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Menu,      "MENU")      >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Backspace)] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Backspace, "BACKSPACE") >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Insert   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Insert   , "INSERT")    >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Delete   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Delete   , "DELETE")    >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Home     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Home     , "HOME")      >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(End      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.End      , "END")       >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(PageUp   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.PageUp   , "PG UP")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(PageDown )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.PageDown , "PG DN")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(NumLock  )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.NumLock  , "NUM LK")    >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Left     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Left     , "LEFT")      >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Right    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Right    , "RIGHT")     >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Up       )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Up       , "UP")        >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Down     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Down     , "DOWN")      >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Fn       )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Fn       , "Fn")        >> 1;
+	halfwidthsOut[TEXTCACHEINDEX(Esc      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Esc      , "ESC")       >> 1;
+}
+
+
 void PrecalculateKeyGeometry(struct AppContext* context)
 {
 		struct timespec clock1, clock2;
@@ -745,6 +777,7 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 	size_t i;
 	//float y = context->StartY;
 	float keyWidth, textWidth;
+	FP266 halfwidths[sizeof(context->TextCache)/sizeof(struct TextCache)];
 	const float gap = context->KeySpacing;
 	float x;
 
@@ -754,28 +787,7 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 	FT_Set_Char_Size(context->Font_WordKeys, 0, (FP266)(((context->ScaleFP266 / 64.0f) * fontSize) * 64), 0, 0);
 
 	PrecacheGlyphs(context, context->Font_WordKeys);
-
-	FP266 halfwidths[21];
-	halfwidths[TEXTCACHEINDEX(Ctrl     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Ctrl,      "CTRL")      >> 1;
-	halfwidths[TEXTCACHEINDEX(Shift    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Shift,     "SHIFT")     >> 1;
-	halfwidths[TEXTCACHEINDEX(Super    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Super,     "SUPER")     >> 1;
-	halfwidths[TEXTCACHEINDEX(Enter    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Enter,     "ENTER")     >> 1;
-	halfwidths[TEXTCACHEINDEX(Tab      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Tab,       "TAB")       >> 1;
-	halfwidths[TEXTCACHEINDEX(Alt      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Alt,       "ALT")       >> 1;
-	halfwidths[TEXTCACHEINDEX(CapsLock )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.CapsLock,  "CAPS LOCK") >> 1;
-	halfwidths[TEXTCACHEINDEX(Menu     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Menu,      "MENU")      >> 1;
-	halfwidths[TEXTCACHEINDEX(Backspace)] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Backspace, "BACKSPACE") >> 1;
-	halfwidths[TEXTCACHEINDEX(Insert   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Insert   , "INSERT")    >> 1;
-	halfwidths[TEXTCACHEINDEX(Delete   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Delete   , "DELETE")    >> 1;
-	halfwidths[TEXTCACHEINDEX(Home     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Home     , "HOME")      >> 1;
-	halfwidths[TEXTCACHEINDEX(End      )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.End      , "END")       >> 1;
-	halfwidths[TEXTCACHEINDEX(PageUp   )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.PageUp   , "PG UP")     >> 1;
-	halfwidths[TEXTCACHEINDEX(PageDown )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.PageDown , "PG DN")     >> 1;
-	halfwidths[TEXTCACHEINDEX(NumLock  )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.NumLock  , "NUM LK")    >> 1;
-	halfwidths[TEXTCACHEINDEX(Left     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Left     , "LEFT")      >> 1;
-	halfwidths[TEXTCACHEINDEX(Right    )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Right    , "RIGHT")     >> 1;
-	halfwidths[TEXTCACHEINDEX(Up       )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Up       , "UP")        >> 1;
-	halfwidths[TEXTCACHEINDEX(Down     )] = PrecacheString(context->Font_WordKeys, &context->GlyphCache, &context->TextCache.Down     , "DOWN")      >> 1;
+	PrecacheStrings(context, halfwidths);
 
 	const FP266 keyHalfWidth = (FP266) ((context->StandardKeyWidth - gap) * 32.0f);
 
@@ -784,7 +796,7 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 		x = context->StartX;
 		for (i = 0; i < KEYSPERROW[row]; x += KEYWIDTHS[row * 16 + i++] * context->StandardKeyWidth)
 		{
-			const char c = row == 4 && context->KeyboardDisplayType == 0 ? KEYCHARS[KEYCHARS_COMPACTOFFSET + i ] : KEYCHARS[row * 16 + i];
+			const char c = context->KeyChars[row * 16 + i];
 			const float keyWidth = context->StandardKeyWidth * KEYWIDTHS[row * 16 + i] - gap;
 			if (c < ' ')
 			{
@@ -808,7 +820,7 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 
 		for (i = 0; i < KEYSPERROW[row+5]; x += context->StandardKeyWidth, ++i)
 		{
-			const char c = KEYCHARS[5*16 + row*4 + i];
+			const char c = context->KeyChars[5*16 + row*4 + i];
 			if (c < ' ')
 			{
 				context->KeyTextXPositions[5*16 + row*4 + i] = (FP266)(x*64) + keyHalfWidth - halfwidths[(int)c];
@@ -837,6 +849,33 @@ void PrecalculateKeyGeometry(struct AppContext* context)
 	textWidth = context->Font_CharKeys->glyph->metrics.width / 64.0f;
 	context->KeyTextXPositions[5*16 + 5*4 + 4*4 + 1] = (FP266)((x + (keyWidth - textWidth) * 0.5f) * 64.0f);
 	context->KeyTextXPositions[5*16 + 5*4 + 4*4 + 2] = context->KeyTextXPositions[5*16 + 5*4 + 4*4 + 1];
+
+	// F-Key row
+	x = context->StartX;
+	context->KeyTextXPositions[0 + XPOS_FKEYOFFSET] = (FP266)(x*64) + keyHalfWidth - halfwidths[TEXTCACHEINDEX(Esc)];
+	x += context->StandardKeyWidth;
+
+	FT_Load_Char(context->Font_WordKeys, 'F', FT_LOAD_DEFAULT);
+	const FP266 advance_F = context->Font_WordKeys->glyph->metrics.horiAdvance;
+	FT_Load_Char(context->Font_WordKeys, '1', FT_LOAD_DEFAULT);
+	const FP266 width_1   = context->Font_WordKeys->glyph->metrics.width;
+	const FP266 advance_1 = context->Font_WordKeys->glyph->metrics.horiAdvance;
+	context->KeyTextXPositions[1 + XPOS_FKEYOFFSET] = (FP266)(x*64) + keyHalfWidth - ((advance_F + width_1) >> 1);
+	x += context->StandardKeyWidth;
+
+	for (int i = 2; i < 10; ++i, x += context->StandardKeyWidth)
+	{
+		FT_Load_Char(context->Font_WordKeys, '0' + i, FT_LOAD_DEFAULT);
+		context->KeyTextXPositions[i + XPOS_FKEYOFFSET] = (FP266)(x*64) + keyHalfWidth - ((advance_F + context->Font_WordKeys->glyph->metrics.width) >> 1);
+	}
+	for (int i = 10; i <= 12; ++i, x += context->StandardKeyWidth)
+	{
+		FT_Load_Char(context->Font_WordKeys, '0' + i - 10, FT_LOAD_DEFAULT);
+		context->KeyTextXPositions[i + XPOS_FKEYOFFSET] = (FP266)(x*64) + keyHalfWidth - ((advance_F + advance_1 + context->Font_WordKeys->glyph->metrics.width) >> 1);
+	}
+
+	// We'll keep Backspace on the F-key row
+	context->KeyTextXPositions[13 + XPOS_FKEYOFFSET] = context->KeyTextXPositions[13];
 	
 
 		clock_gettime(CLOCK_MONOTONIC, &clock2);
@@ -867,7 +906,7 @@ void DrawRow(struct Graphics* graphics, struct AppContext* context, int row)
 		keyStates = context->KeyStates_NumPad[row-10];
 	uint32_t state = keyStates;
 
-	const char* const chars = row == 4 && context->KeyboardDisplayType == 0 ? &KEYCHARS[KEYCHARS_COMPACTOFFSET] : &KEYCHARS[CHARINDEXFORKEY(row/5, row%5, 0, context->HeldModifiers)];
+	const char* const chars = &context->KeyChars[CHARINDEXFORKEY(row/5, row%5, 0)];
 	const int nKeys = KEYSPERROW[row];
 	if (row >= 5)
 		goto ExtendedKeyboard;
@@ -903,25 +942,56 @@ DrawKeyText:
 	const float fontHeight = (context->Font_WordKeys->ascender - context->Font_WordKeys->descender) / 64.0f;
 	const FP266 yChar = (FP266) ((y + 0.8f * keyHeight - 5) * 64.0f);
 	const FP266 yWord = (FP266) ((y + 0.5f * keyHeight - 0.8f * fontHeight) * 64.0f);
-	char text[2] = {0,0};
+	FP266 textX, textY;
 	for (int i = 0; i < nKeys; ++i)
 	{
-		text[0] = chars[i];
-		if (text[0] > ' ')
+		char keyChar = chars[i];
+		if (keyChar >= FKEY(0))
 		{
-			FP266 textX = context->KeyTextXPositions[CHARINDEXFORKEY(row/5, row%5, i, 0)];
-			FP266 textY = yChar;
+			textX = context->KeyTextXPositions[i + XPOS_FKEYOFFSET];
+			if (keyChar == FKEY(0))
+			{
+				keyChar = TEXTCACHEINDEX(Esc);
+				goto DrawWord;
+			}
+			textY = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 0.8f * (context->FontSize_WordKeys)) * 64.0f);
+			Graphics_SetFont(graphics, context->Font_WordKeys);
+			lastKeyState = SetTextColourByKey(state, i, lastKeyState, graphics);
+			SetBackgroundColourByState(lastKeyState, graphics);
+#if defined(USE_KERNING) && USE_KERNING
+			// Do any of the numbers or 'F' even do any kerning? I doubt...
+			FT_UInt KERNGLYPH_ = 0, *KERNGLYPH = &KERNGLYPH_;
+#else
+			#define KERNGLYPH NULL
+#endif
+			TryDrawCachedChar(graphics, 'F', &textX, &textY, KERNGLYPH, &context->GlyphCache);
+			const int fkey = keyChar - FKEY(1) + 1;
+			if (fkey < 10)
+			{
+				DrawChar(graphics, fkey + '0', &textX, &textY, KERNGLYPH);
+			}
+			else
+			{
+				DrawChar(graphics, '1', &textX, &textY, NULL);
+				DrawChar(graphics, fkey - 10 + '0', &textX, &textY, KERNGLYPH);
+			}
+		}
+		else if (keyChar > ' ')
+		{
+			textX = context->KeyTextXPositions[CHARINDEXFORKEY(row/5, row%5, i)];
+			textY = yChar;
 			Graphics_SetFont(graphics, context->Font_CharKeys);
 			lastKeyState = SetTextColourByKey(state, i, lastKeyState, graphics);
 			SetBackgroundColourByState(lastKeyState, graphics);
-			DrawChar(graphics, text[0], &textX, &textY, NULL);
+			DrawChar(graphics, keyChar, &textX, &textY, NULL);
 
 		}
-		else if (text[0] < ' ')
+		else if (keyChar < ' ')
 		{
-			const struct TextCache* cache = &((struct TextCache*)&context->TextCache)[(int)text[0]];
-			FP266 textX = context->KeyTextXPositions[CHARINDEXFORKEY(row/5, row%5, i, 0)];
-			FP266 textY = yWord + (cache->Top << 6);
+			textX = context->KeyTextXPositions[CHARINDEXFORKEY(row/5, row%5, i)];
+		DrawWord:
+			const struct TextCache* const cache = &((struct TextCache*)&context->TextCache)[(int)keyChar];
+			textY = yWord + (cache->Top << 6);
 			//Graphics_SetFont(graphics, context->Font_WordKeys);
 			lastKeyState = SetTextColourByKey(state, i, lastKeyState, graphics);
 			SetBackgroundColourByState(lastKeyState, graphics);
@@ -1356,6 +1426,11 @@ void UpdateSize(struct AppContext* context, uint32_t width, uint32_t height, uin
 	printf("%fpx of padding between clusters\n", extraClusterSpace);
 	printf("Total width: %.1fpx\n", displayType == 0 ? (14.9 * keySize) : displayType == 1 ? (17.9 * keySize + extraClusterSpace) : (21.9 * keySize + 2 * extraClusterSpace));
 
+	if (displayType == 0 && context->KeyboardDisplayType != 0)
+		memcpy(&context->KeyCodes[4*16], &KEYCODES[KEYCODES_COMPACTOFFSET], 16);
+	else if (displayType != 0 && context->KeyboardDisplayType == 0)
+		memcpy(&context->KeyCodes[4*16], &KEYCODES[4*16], 16);
+
 	context->KeyboardDisplayType = displayType;
 	context->StandardKeyWidth    = keySize;
 	context->KeyboardClusterGap  = extraClusterSpace;
@@ -1514,11 +1589,12 @@ static inline Modifiers_t GetModifierFlagForKey(KeyIndex key)
 		case MakeRawIndex(0, 3, 0):  return MOD_LSHIFT;
 		case MakeRawIndex(0, 3, 11): return MOD_RSHIFT;
 		case MakeRawIndex(0, 4, 0):  return MOD_LCTRL;
-		case MakeRawIndex(0, 4, 1):  return MOD_LSUPER;
-		case MakeRawIndex(0, 4, 2):  return MOD_LALT;
-		case MakeRawIndex(0, 4, 4):  return MOD_RALT;
-		case MakeRawIndex(0, 4, 5):  return MOD_RSUPER;
-		case MakeRawIndex(0, 4, 7):  return MOD_RCTRL;
+		case MakeRawIndex(0, 4, 1):  return MOD_FN;
+		case MakeRawIndex(0, 4, 2):  return MOD_LSUPER;
+		case MakeRawIndex(0, 4, 3):  return MOD_LALT;
+		case MakeRawIndex(0, 4, 5):  return MOD_RALT;
+		case MakeRawIndex(0, 4, 6):  return MOD_RSUPER;
+		case MakeRawIndex(0, 4, 8):  return MOD_RCTRL;
 		case MakeRawIndex(2, 0, 0):  return MOD_NUMLOCK_PRESSED;
 		default:                     return 0;
 	}
@@ -1643,51 +1719,43 @@ void SetHighlightFlag(struct AppContext* context, uint32_t flag, KeyIndex index,
 
 void SendKey(struct AppContext* context, KeyIndex index, int state, uint32_t time)
 {
-	//printf("sending key %xh\n", index.raw);
-	switch (index.cluster)
-	{
-		case 0:
-			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, index.row == 4 && context->KeyboardDisplayType == 0 ? keyCodes[KEYCODES_COMPACTOFFSET + index.key] : keyCodes[index.row * 16 + index.key], state);
-			break;
-		case 1:
-			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, keyCodes[(16 * 5) + index.row * 4 + index.key], state);
-			break;
-		case 2:
-			zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, keyCodes[(16 * 5) + (5 * 4) + index.row * 4 + index.key], state);
-			break;
-	}
+	auto keycode = context->KeyCodes[CHARINDEXFORKEYINDEX(index)];
+	//printf("Sending keycode %u for key %u.%u.%u (index %u)\n", keycode, index.cluster, index.row, index.key, CHARINDEXFORKEYINDEX(index));
+	if (!keycode)
+		return;
 
-	switch (index.raw & 0x7FF)
+	zwp_virtual_keyboard_v1_key(context->VirtualKeyboard, time, keycode, state);
+	switch (keycode)
 	{
-		case MakeRawIndex(0, 2, 0): // caps lock
+		case KEY_CAPSLOCK:
 			//printf("caps lock\n");
 			xkb_state_update_key(context->Xkb.State, KEY_CAPSLOCK+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 3, 0): // lshift
+		case KEY_LEFTSHIFT:
 			//printf("left shift\n");
 			xkb_state_update_key(context->Xkb.State, KEY_LEFTSHIFT+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 0): // lctrl
+		case KEY_LEFTCTRL:
 			//printf("left control\n");
 			xkb_state_update_key(context->Xkb.State, KEY_LEFTCTRL+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 1): // lmeta
+		case KEY_LEFTMETA:
 			//printf("left meta\n");
 			xkb_state_update_key(context->Xkb.State, KEY_LEFTMETA+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 2): // lalt
+		case KEY_LEFTALT:
 			xkb_state_update_key(context->Xkb.State, KEY_LEFTALT+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 4): // ralt
+		case KEY_RIGHTALT:
 			xkb_state_update_key(context->Xkb.State, KEY_RIGHTALT+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 6): // rmeta
+		case KEY_RIGHTMETA:
 			xkb_state_update_key(context->Xkb.State, KEY_RIGHTMETA+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(0, 4, 7): // rctrl
+		case KEY_RIGHTCTRL:
 			xkb_state_update_key(context->Xkb.State, KEY_RIGHTCTRL+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
-		case MakeRawIndex(2, 0, 0): // num lock
+		case KEY_NUMLOCK:
 			xkb_state_update_key(context->Xkb.State, KEY_NUMLOCK+8, state == WL_KEYBOARD_KEY_STATE_PRESSED ? XKB_KEY_DOWN : XKB_KEY_UP);
 			goto UpdateState;
 	}
@@ -1704,15 +1772,9 @@ UpdateState:
 		group     = xkb_state_serialize_group(context->Xkb.State, XKB_STATE_EFFECTIVE);
 		printf("Updating modifier state: latched=%x, depressed=%x, locked=%x, group=%x\n", latched, depressed, locked, group);
 		zwp_virtual_keyboard_v1_modifiers(context->VirtualKeyboard, depressed, latched, locked, group);
-		UpdateModifierUi(context, locked, depressed);
 	}
 };
 
-void UpdateModifierUi([[maybe_unused]] struct AppContext* context,
-		              [[maybe_unused]] xkb_mod_mask_t locked,
-					  [[maybe_unused]] xkb_mod_mask_t depressed)
-{
-}
 
 KeyIndex GetKeyAtLocation(float x, float y, const struct AppContext* context, bool touch)
 {

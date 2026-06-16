@@ -1,19 +1,22 @@
-PROJECT := wayboard
-SOURCES += main.c pointer.c touch.c virtualKeyboard.c graphics.c common.h queue.c queue.h futex.h futex.c graphics.h
+PROJECT   := wayboard
+SOURCES   += main.c pointer.c touch.c virtualKeyboard.c graphics.c common.h queue.c queue.h futex.h futex.c graphics.h
 PROTOCOLS += virtual-keyboard-unstable-v1
 PROTOCOLS += input-method-unstable-v2
 PROTOCOLS += wayland-protocols/stable/xdg-shell/xdg-shell
 PROTOCOLS += wlr-protocols/unstable/wlr-layer-shell-unstable-v1
+DEFINES   += USE_KERNING=1
 
 LIBS += wayland-client xkbcommon m 
 FTLIBS = $$(pkg-config --libs-only-l $$(pkg-config --print-requires libs/freetype/build/freetype2.pc))
 STATICLIBS += libs/freetype/build/libfreetype.a
 
-#FLAGS = -O3 -march=skylake
 FLAGS = -march=skylake
-CFLAGS += $(addprefix -D,${DEFINES}) -I../freetype/include -std=gnu23 -Wall -Wextra -Werror=incompatible-pointer-types
+CFLAGS += $(addprefix -D,${DEFINES}) -I../freetype/include -std=gnu23 -Wall -Wextra -Werror=incompatible-pointer-types -funsigned-char
 LDFLAGS = -flto
 
+
+# flags to be passed to the local FreeType build (we disable as much as we can get away
+# with, because it's statically linked, and we want as small a file as possible)
 FTFLAGS += BUILD_SHARED_LIBS=OFF
 FTFLAGS += FT_DISABLE_PNG=ON
 FTFLAGS += FT_DISABLE_HARFBUZZ=ON

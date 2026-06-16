@@ -2,6 +2,7 @@ CompileFlags:
   Add:
     - "--driver-mode=gcc"
     - "--include=common.h"
+    - "-funsigned-char"
     - "-Wall"
     - "-Wextra"
     - "-Werror=incompatible-pointer-types"

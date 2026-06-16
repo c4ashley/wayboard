@@ -14,6 +14,62 @@ void CreateGraphicsFromBuffer(struct Buffer* buffer, struct AppContext* context,
 	result->Font     = context->Font_CharKeys;
 };
 
+static void UpdateNumericRow(struct AppContext* context)
+{
+	if (context->HeldModifiers & MOD_FN_MASK)
+	{
+		if (context->KeyChars[0] != TEXTCACHEINDEX(Esc))
+		{
+			memcpy(&context->KeyChars[0], &KEYCHARS[KEYCHARS_FKEYOFFSET], 16);
+			memcpy(&context->KeyCodes[0], &KEYCODES[KEYCODES_FKEYOFFSET], 16);
+		}
+	}
+	else if (context->HeldModifiers & MOD_SHIFTMASK)
+	{
+		if (context->KeyChars[0] != '~')
+			memcpy(&context->KeyChars[0], &KEYCHARS[KEYCHARS_SHIFTOFFSET], 16);
+		if (context->KeyCodes[0] != KEYCODES[0])
+			memcpy(&context->KeyCodes[0], &KEYCODES[0], 16);
+	}
+	else
+	{
+		if (context->KeyChars[0] != '`')
+			memcpy(&context->KeyChars[0], &KEYCHARS[0], 16);
+		if (context->KeyCodes[0] != KEYCODES[0])
+			memcpy(&context->KeyCodes[0], &KEYCODES[0], 16);
+	}
+}
+
+static void UpdateLetterRows(struct AppContext* context)
+{
+	if (context->HeldModifiers & MOD_CAPSLOCK_MASK)
+	{
+		if (context->HeldModifiers & MOD_SHIFTMASK)
+		{
+			if (context->KeyChars[17] != 'q' || context->KeyChars[27] != '{')
+				memcpy(&context->KeyChars[16], &KEYCHARS[KEYCHARS_SHIFTCAPSOFFSET + 16], 3*16);
+		}
+		else
+		{
+			if (context->KeyChars[17] != 'Q' || context->KeyChars[27] != '[')
+				memcpy(&context->KeyChars[16], &KEYCHARS[KEYCHARS_CAPSOFFSET + 16], 3*16);
+		}
+	}
+	else
+	{
+		if (context->HeldModifiers & MOD_SHIFTMASK)
+		{
+			if (context->KeyChars[17] != 'Q' || context->KeyChars[27] != '[')
+				memcpy(&context->KeyChars[16], &KEYCHARS[KEYCHARS_SHIFTOFFSET + 16], 3*16);
+		}
+		else
+		{
+			if (context->KeyChars[17] != 'Q' || context->KeyChars[27] != '[')
+				memcpy(&context->KeyChars[16], &KEYCHARS[16], 3*16);
+		}
+	}
+}
+
 void RefreshInvalidatedRegions(struct AppContext* context)
 {
 	struct Buffer* buffer = NULL;
@@ -40,17 +96,21 @@ void RefreshInvalidatedRegions(struct AppContext* context)
 		switch (context->DirtyState)
 		{
 			case DS_LetterKeys:
+				UpdateLetterRows(context);
 				DrawRow(&graphics, context, 1);
 				DrawRow(&graphics, context, 2);
 				DrawRow(&graphics, context, 3);
-				DrawRow(&graphics, context, 4);
+				//DrawRow(&graphics, context, 4);
 				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)(context->StartY + context->RowHeight), (int)(14.9 * context->StandardKeyWidth), (int)(4 * context->RowHeight));
 				break;
 			case DS_NumericKeys:
+				UpdateNumericRow(context);
 				DrawRow(&graphics, context, 0);
 				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(1 * context->RowHeight));
 				break;
 			case DS_WholeMainKeyboard:
+				UpdateNumericRow(context);
+				UpdateLetterRows(context);
 				DrawRow(&graphics, context, 0);
 				DrawRow(&graphics, context, 1);
 				DrawRow(&graphics, context, 2);
@@ -59,6 +119,8 @@ void RefreshInvalidatedRegions(struct AppContext* context)
 				wl_surface_damage_buffer(context->Surface, (int)context->StartX, (int)context->StartY, (int)(14.9 * context->StandardKeyWidth), (int)(5 * context->RowHeight));
 				break;
 			case DS_WholeSurface:
+				UpdateNumericRow(context);
+				UpdateLetterRows(context);
 				// TODO: Refactor DrawKeyboard. DrawKeyboard will attempt to obtain a buffer, which it will be unable to do.
 				DrawKeyboard(context);
 				wl_surface_damage_buffer(context->Surface, 0, 0, buffer->Width, buffer->Height);
@@ -303,6 +365,57 @@ void DrawGlyphOver(struct Graphics* graphics, const FT_Bitmap* glyph, int startX
 	}
 }
 
+void TryDrawCachedChar(struct Graphics* graphics, char c, FP266* x, FP266* y, [[maybe_unused]] FT_UInt* previousGlyphForKerning, const struct GlyphCache* glyphs)
+{
+	if ((c & 0x1F) >= 27)
+		goto NoGlyph;
+	const struct CachedGlyph* glyph = &glyphs->Glyphs[c & 0x1F];
+	if (glyph->GlyphIndex == 0)
+		goto NoGlyph;
+
+	if (*x >= 0 && *y >= 0)
+	{
+		//printf("x=%6.1fpx ", *x/64.0f);
+#if defined(USE_KERNING) && USE_KERNING
+		bool isKerned = false;
+		if (previousGlyphForKerning)
+		{
+			if (*previousGlyphForKerning)
+			{
+				FT_Vector kerning;
+				FT_Get_Kerning(graphics->Font, *previousGlyphForKerning, glyph->GlyphIndex, FT_KERNING_DEFAULT, &kerning);
+				*x += kerning.x;
+				if (kerning.x < 0)
+					isKerned = true;
+				//printf("kern=% 3.1fpx ", kerning.x / 64.0f);
+			}
+			//else fputs("         px ", stdout);
+			*previousGlyphForKerning = glyph->GlyphIndex;
+		}
+		//else fputs("         px ", stdout);
+#endif
+		//if (FT_Render_Glyph(graphics->Font->glyph, FT_RENDER_MODE_NORMAL) != 0)
+		//	fprintf(stderr, "FreeType: Couldn't render glyph for char '%c' (%Xh)\n", c, c);
+#if defined(USE_KERNING) && USE_KERNING
+		const FT_Bitmap bmp = (FT_Bitmap) { .buffer = &glyphs->Data[glyph->Bitmap.Offset],
+			                                .pitch  = glyph->Bitmap.Stride,
+									        .rows   = glyph->Bitmap.Height,
+									        .width  = glyph->Bitmap.Width };
+		if (isKerned)
+			DrawGlyphOver(graphics, &bmp, (*x>>6) + glyph->Bitmap.Left, (*y>>6) - glyph->Bitmap.Top);
+		else
+#endif
+			DrawGlyph(graphics, &bmp, (*x>>6) + glyph->Bitmap.Left, (*y>>6) - glyph->Bitmap.Top);
+	}
+	//printf("advance=%4.1fpx width=%2dpx left=%2dpx\n", graphics->Font->glyph->advance.x/64.0f, graphics->Font->glyph->bitmap.width, graphics->Font->glyph->bitmap_left);
+	*x += graphics->Font->glyph->advance.x;
+	*y += graphics->Font->glyph->advance.y;
+	return;
+
+NoGlyph:
+	DrawChar(graphics, c, x, y, previousGlyphForKerning);
+}
+
 void DrawChar(struct Graphics* graphics, char c, FP266* x, FP266* y, [[maybe_unused]] FT_UInt* previousGlyphForKerning)
 {
 	FT_UInt charIndex = FT_Get_Char_Index(graphics->Font, c);
@@ -350,7 +463,7 @@ void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key
 	float y = context->StartY + (key.row % 5) * context->RowHeight;
 	float width = context->StandardKeyWidth;
 	float height = context->RowHeight;
-	char keyChar = key.cluster == 0 && key.row == 4 && context->KeyboardDisplayType == 0 ? KEYCHARS[KEYCHARS_COMPACTOFFSET + key.key] : KEYCHARS[CHARINDEXFORKEYINDEX(key, context->HeldModifiers)];
+	char keyChar = context->KeyChars[CHARINDEXFORKEYINDEX(key)];
 	//char keyChar = linearRow >= 4 ? KEYCHARS[4*16 + (linearRow - 4) * 4 + key.key] : KEYCHARS[linearRow * 16 + key.key];
 	switch (key.cluster)
 	{
@@ -391,21 +504,52 @@ void DrawKey(struct AppContext* context, struct Graphics* graphics, KeyIndex key
 	SetBackgroundColourByState(state, graphics);
 	DrawRectangle(graphics, (int)x, (int)y, (int)width, (int)height);
 	SetTextColourByState(state, graphics);
-	if (keyChar > ' ')
+	FP266 xf, yf;
+	if (keyChar >= FKEY(0))
 	{
-		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
-		FP266 yf = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 5) * 64.0f);
+		xf = context->KeyTextXPositions[key.key + XPOS_FKEYOFFSET];
+		if (keyChar == FKEY(0))
+		{
+			keyChar = TEXTCACHEINDEX(Esc);
+			goto DrawWord;
+		}
+		yf = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 0.8f * (context->FontSize_WordKeys)) * 64.0f);
+		//yf += cache->Top << 6;
+		Graphics_SetFont(graphics, context->Font_WordKeys);
+#if defined(USE_KERNING) && USE_KERNING
+		// Do any of the numbers or 'F' even do any kerning? I doubt...
+		FT_UInt KERNGLYPH_ = 0, *KERNGLYPH = &KERNGLYPH_;
+#else
+		#define KERNGLYPH NULL
+#endif
+		TryDrawCachedChar(graphics, 'F', &xf, &yf, KERNGLYPH, &context->GlyphCache);
+		const int fkey = keyChar - FKEY(1) + 1;
+		if (fkey < 10)
+		{
+			DrawChar(graphics, fkey + '0', &xf, &yf, KERNGLYPH);
+		}
+		else
+		{
+			DrawChar(graphics, '1', &xf, &yf, KERNGLYPH);
+			DrawChar(graphics, fkey - 10 + '0', &xf, &yf, KERNGLYPH);
+		}
+	}
+	else if (keyChar > ' ')
+	{
+		xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key)];
+		yf = (FP266)((y + 0.8f * (context->RowHeight - context->KeySpacing) - 5) * 64.0f);
 		Graphics_SetFont(graphics, context->Font_CharKeys);
 		DrawChar(graphics, keyChar, &xf, &yf, NULL);
 	}
 	else if (keyChar < ' ')
 	{
+		xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key)];
+	DrawWord:
 		const struct TextCache* cache = &((struct TextCache*)&context->TextCache)[(int)keyChar];
 		//printf("Attempting to draw text for key %d.%d.%d (%Xh)\n", key.cluster, key.row, key.key, key.raw);
 		Graphics_SetFont(graphics, context->Font_WordKeys);
 		float fontHeight = (context->Font_WordKeys->ascender - context->Font_WordKeys->descender) / 64.0f;
-		FP266 xf = context->KeyTextXPositions[CHARINDEXFORKEYINDEX(key, 0)];
-		FP266 yf = (FP266)((y + 0.5f * (context->RowHeight - context->KeySpacing) - 0.8f * (fontHeight)) * 64.0f);
+		yf = (FP266)((y + 0.5f * (context->RowHeight - context->KeySpacing) - 0.8f * (fontHeight)) * 64.0f);
 		yf += cache->Top << 6;
 		//printf("Drawing %dx%dpx at (%.1f,%.1f)\n", cache->Bitmap.width, cache->Bitmap.rows, (float)xf / 64.0f, (float)yf / 64.0f);
 		Graphics_SetFont(graphics, context->Font_CharKeys);

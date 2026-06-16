@@ -156,9 +156,12 @@ typedef enum Modifiers
 	MOD_SCROLLLOCK_PRESSED = 1<<12,
 	MOD_SCROLLLOCK_LATCHED = 1<<13,
 	MOD_SCROLLLOCK_MASK    = MOD_SCROLLLOCK_PRESSED | MOD_SCROLLLOCK_LATCHED,
+	MOD_FN                 = 1<<14,
+	MOD_FN_LOCKED          = 1<<15,
+	MOD_FN_MASK            = MOD_FN | MOD_FN_LOCKED,
 
-	MOD_LOCKMASK = MOD_CAPSLOCK_MASK | MOD_NUMLOCK_MASK | MOD_SCROLLLOCK_MASK,
-	MOD_LOCKMASK_LATCH = MOD_CAPSLOCK_LATCHED | MOD_NUMLOCK_LATCHED | MOD_SCROLLLOCK_LATCHED,
+	MOD_LOCKMASK = MOD_CAPSLOCK_MASK | MOD_NUMLOCK_MASK | MOD_SCROLLLOCK_MASK | MOD_FN,
+	MOD_LOCKMASK_LATCH = MOD_CAPSLOCK_LATCHED | MOD_NUMLOCK_LATCHED | MOD_SCROLLLOCK_LATCHED | MOD_FN_LOCKED,
 } Modifiers_t;
 
 struct AppContext
@@ -208,6 +211,7 @@ struct AppContext
 	struct KeyQueue DirtyKeys;
 	enum   DirtyStateEnum DirtyState;
 	bool   Visible;
+	bool   Exclusive;
 
 	struct 
 	{
@@ -220,8 +224,9 @@ struct AppContext
 			FT_Bitmap Bitmap;
 			int   Left;
 			int   Top;
+			FP266 Halfwidth;
 		}
-		Esc, CapsLock, Shift, Ctrl, Super, Menu, Alt, Enter, Backspace, Tab, Insert, Delete, Home, End, PageUp, PageDown, Up, Down, Left, Right, NumLock;
+		Esc, CapsLock, Shift, Ctrl, Super, Menu, Alt, Enter, Backspace, Tab, Insert, Delete, Home, End, PageUp, PageDown, Up, Down, Left, Right, NumLock, Fn;
 	} TextCache;
 	struct GlyphCache GlyphCache;
 
@@ -250,9 +255,11 @@ struct AppContext
 	KeyIndex PointerHighlight;
 	KeyIndex PointerPressed;
 	uint32_t KeyStates_Keyboard[5];
-	uint8_t KeyStates_Navigation[5];
-	uint8_t KeyStates_NumPad[5];
-	FP266 KeyTextXPositions[5 * 16 + 10 * 4]; // 5 rows of 16 for main keyboard, 10 rows of 4 for supplementary
+	uint8_t  KeyStates_Navigation[5];
+	uint8_t  KeyStates_NumPad[5];
+	FP266    KeyTextXPositions[5 * 16 + 10 * 4 + 5 * 16 + 16]; // 5 rows of 16 for main keyboard, 10 rows of 4 for supplementary, another 5 rows of 16 for SHIFTed main keyboard, and a final 16 for the F-key row
+	uint8_t  KeyCodes[5 * 16 + 10 * 4];
+	char     KeyChars[5 * 16 + 10 * 4];
 };
 
 static inline bool KeyIndexEquals(KeyIndex a, KeyIndex b)
